@@ -32,7 +32,7 @@ phases:
       # Check quality gate status
       - echo "Checking quality gate status"
       - |
-        TASK_ID=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/ce/activity?component=$SONAR_PROJECT_KEY | jq -r '.tasks[0].id')
+        TASK_ID=$(curl -s -u 14b0c1d6ede21ab6cd33fb7da8d553e77e62dbc2: https://sonarcloud.io/api/ce/activity?component=javafromcodepipeline | jq -r '.tasks[0].id')
         echo "Task ID: $TASK_ID"
         
         # Wait for analysis to complete
