@@ -26,37 +26,31 @@ phases:
     commands:
       - mvn test -Dtest=\!*PostgresIntegrationTests
       - mvn sonar:sonar -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
+      # Wait for SonarQube to process the results (adjust time as needed)
       - echo "Waiting for SonarQube to process results"
-      - sleep 10
+      - sleep 20
       
-      # Check quality gate status
-      - echo "Checking quality gate status"
+      # Check quality gate status directly
       - |
-        TASK_ID=$(curl -s -u 14b0c1d6ede21ab6cd33fb7da8d553e77e62dbc2: https://sonarcloud.io/api/ce/activity?component=javafromcodepipeline | jq -r '.tasks[0].id')
-        echo "Task ID: $TASK_ID"
+        echo "Checking quality gate status"
+        RESPONSE=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY)
+        echo "Quality Gate Response: $RESPONSE"
         
-        # Wait for analysis to complete
-        TASK_STATUS="IN_PROGRESS"
-        while [ "$TASK_STATUS" == "IN_PROGRESS" ]
-        do
-          TASK_STATUS=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/ce/task?id=$TASK_ID | jq -r '.task.status')
-          echo "Task status: $TASK_STATUS"
-          if [ "$TASK_STATUS" == "IN_PROGRESS" ]; then
-            echo "Analysis still in progress, waiting..."
-            sleep 50
+        # Extract status safely
+        if echo $RESPONSE | jq -e '.projectStatus' > /dev/null 2>&1; then
+          QUALITY_GATE_STATUS=$(echo $RESPONSE | jq -r '.projectStatus.status')
+          echo "Quality Gate Status: $QUALITY_GATE_STATUS"
+          
+          if [ "$QUALITY_GATE_STATUS" != "OK" ]; then
+            echo "Quality gate failed!"
+            exit 1
+          else
+            echo "Quality gate passed!"
           fi
-        done
-        
-        # Get quality gate status
-        QUALITY_GATE_STATUS=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY | jq -r '.projectStatus.status')
-        echo "Quality Gate Status: $QUALITY_GATE_STATUS"
-        
-        # Fail build if quality gate fails
-        if [ "$QUALITY_GATE_STATUS" != "OK" ]; then
-          echo "Quality gate failed!"
-          exit 1
         else
-          echo "Quality gate passed!"
+          echo "Error: Could not determine quality gate status"
+          echo "Raw response: $RESPONSE"
+          exit 1
         fi
 
 artifacts:
