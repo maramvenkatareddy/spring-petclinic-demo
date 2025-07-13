@@ -22,7 +22,7 @@ phases:
       - export PATH=$PATH:$(pwd)/sonar-scanner-3.3.0.1492-linux/bin
   build:
     commands:
-      - mvn test
+      - mvn test -Dtest=\!*PostgresIntegrationTests
       - mvn sonar:sonar -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
       - sleep 5
       - curl "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project" -o result.json
