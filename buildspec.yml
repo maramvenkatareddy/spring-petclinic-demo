@@ -1,10 +1,6 @@
 version: 0.2
 
 env:
-  variables:
-    MAVEN_OPTS: "-Xmx1024m"
-    SONAR_SCANNER_OPTS: "-Xmx512m"
-    JAVA_HOME: "/usr/lib/jvm/java-17-openjdk-amd64"
   secrets-manager:
     LOGIN: sonarcreds:sonartoken
     HOST: sonarcreds:Host
@@ -12,314 +8,57 @@ env:
     Project: sonarcreds:Project
 
 phases:
-  install:
-    runtime-versions:
-      java: corretto17
-    commands:
-      - echo "Installing system dependencies..."
-      - apt-get update -y
-      - apt-get install -y jq unzip wget curl
-      
   pre_build:
     commands:
-      - echo "Pre-build phase started on `date`"
-      - echo "Java version check..."
+      - apt-get update
+      - apt-get install -y jq unzip wget
+      - apt install -y openjdk-17-jdk
       - java -version
-      - javac -version
-      
-      # Install Maven
-      - echo "Installing Maven 3.9.10..."
-      - wget -q https://dlcdn.apache.org/maven/maven-3/3.9.10/binaries/apache-maven-3.9.10-bin.tar.gz
+      - wget https://dlcdn.apache.org/maven/maven-3/3.9.10/binaries/apache-maven-3.9.10-bin.tar.gz
       - tar xzf apache-maven-3.9.10-bin.tar.gz
       - ln -s apache-maven-3.9.10 maven
       - export PATH=$PATH:$(pwd)/maven/bin
-      - export M2_HOME=$(pwd)/maven
-      - mvn -version
-      
-      # Install SonarScanner (use newer version)
-      - echo "Installing SonarScanner..."
-      - wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
-      - unzip -q sonar-scanner-cli-4.8.0.2856-linux.zip
-      - export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
-      - sonar-scanner --version
-      
-      # Validate SonarQube connection
-      - echo "Validating SonarQube connection..."
-      - |
-        if ! curl -s -f -u "$LOGIN:" "$HOST/api/system/status" > /dev/null; then
-          echo "ERROR: Cannot connect to SonarQube server at $HOST"
-          echo "Please check your HOST and LOGIN credentials"
-          exit 1
-        fi
-        echo "✅ SonarQube server connection validated"
-      
-      # Check if project exists
-      - echo "Checking if project exists in SonarQube..."
-      - |
-        project_check=$(curl -s -u "$LOGIN:" "$HOST/api/projects/search?projects=$Project")
-        if ! echo "$project_check" | jq -e '.components[] | select(.key == "'$Project'")' > /dev/null; then
-          echo "⚠️  Project $Project not found in SonarQube, it will be created during analysis"
-        else
-          echo "✅ Project $Project found in SonarQube"
-        fi
-      
-      # Set environment variables for Maven
-      - echo "Setting environment variables..."
-      - export PATH=$PATH:$(pwd)/maven/bin:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
-      - echo "PATH=$PATH" >> $CODEBUILD_SRC_DIR/.env
-      
+      - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-3.3.0.1492-linux.zip
+      - unzip sonar-scanner-cli-3.3.0.1492-linux.zip
+      - export PATH=$PATH:$(pwd)/sonar-scanner-3.3.0.1492-linux/bin
+
   build:
     commands:
-      - echo "Build phase started on `date`"
-      - source $CODEBUILD_SRC_DIR/.env || true
+      - mvn test -Dtest=\!*PostgresIntegrationTests
+      - mvn sonar:sonar -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
+      - echo "Waiting for SonarQube to process results"
+      - sleep 10
       
-      # Clean and compile
-      - echo "Cleaning and compiling project..."
-      - mvn clean compile -B
-      
-      # Run tests (excluding PostgreSQL integration tests)
-      - echo "Running unit tests..."
-      - mvn test -Dtest=\!*PostgresIntegrationTests -B
-      
-      # Package the application
-      - echo "Packaging application..."
-      - mvn package -DskipTests -B
-      
-      # Run SonarQube analysis with better error handling
-      - echo "Running SonarQube analysis..."
+      # Check quality gate status
+      - echo "Checking quality gate status"
       - |
-        set -e
-        mvn sonar:sonar \
-          -Dsonar.login="$LOGIN" \
-          -Dsonar.host.url="$HOST" \
-          -Dsonar.projectKey="$Project" \
-          -Dsonar.organization="$Organization" \
-          -Dsonar.java.binaries=target/classes \
-          -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-          -Dsonar.junit.reportPaths=target/surefire-reports \
-          -Dsonar.qualitygate.wait=true \
-          -Dsonar.qualitygate.timeout=300 \
-          -B
+        TASK_ID=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/ce/activity?component=$SONAR_PROJECT_KEY | jq -r '.tasks[0].id')
+        echo "Task ID: $TASK_ID"
         
-        echo "✅ SonarQube analysis completed successfully"
-      
-      # Enhanced quality gate check with retry logic
-      - echo "Checking quality gate status..."
-      - |
-        check_quality_gate() {
-          local max_attempts=15
-          local attempt=1
-          local wait_time=10
-          
-          while [ $attempt -le $max_attempts ]; do
-            echo "🔍 Attempt $attempt/$max_attempts: Checking quality gate status..."
-            
-            # Make API call to get quality gate status
-            response=$(curl -s -u "$LOGIN:" "$HOST/api/qualitygates/project_status?projectKey=$Project")
-            
-            # Save response for debugging
-            echo "$response" > "result_attempt_$attempt.json"
-            
-            # Check if response contains errors
-            if echo "$response" | jq -e '.errors' > /dev/null 2>&1; then
-              echo "❌ API Error in attempt $attempt:"
-              echo "$response" | jq '.errors' 2>/dev/null || echo "Failed to parse error JSON"
-              
-              if [ $attempt -eq $max_attempts ]; then
-                echo "💥 ERROR: Failed to get quality gate status after $max_attempts attempts"
-                echo "Final response:"
-                cat "result_attempt_$attempt.json"
-                return 1
-              fi
-              
-              echo "⏳ Waiting $wait_time seconds before retry..."
-              sleep $wait_time
-              attempt=$((attempt + 1))
-              continue
-            fi
-            
-            # Check if response has valid project status
-            if ! echo "$response" | jq -e '.projectStatus' > /dev/null 2>&1; then
-              echo "⚠️  Invalid response format in attempt $attempt:"
-              echo "$response" | head -200
-              
-              if [ $attempt -eq $max_attempts ]; then
-                echo "💥 ERROR: Invalid response format after $max_attempts attempts"
-                return 1
-              fi
-              
-              echo "⏳ Waiting $wait_time seconds before retry..."
-              sleep $wait_time
-              attempt=$((attempt + 1))
-              continue
-            fi
-            
-            # Extract status
-            status=$(echo "$response" | jq -r '.projectStatus.status')
-            
-            case "$status" in
-              "OK")
-                echo "✅ QUALITY GATE PASSED: $status"
-                echo "📊 Quality gate conditions:"
-                echo "$response" | jq '.projectStatus.conditions[]' 2>/dev/null || echo "No conditions data available"
-                
-                # Show key metrics
-                echo "📈 Key metrics summary:"
-                curl -s -u "$LOGIN:" "$HOST/api/measures/component?component=$Project&metricKeys=coverage,duplicated_lines_density,sqale_rating,reliability_rating,security_rating,bugs,vulnerabilities,code_smells" | \
-                  jq -r '.component.measures[]? | "\(.metric): \(.value // "N/A")"' 2>/dev/null || echo "Metrics not available"
-                
-                return 0
-                ;;
-              "ERROR")
-                echo "❌ QUALITY GATE FAILED: $status"
-                echo "💥 Failed conditions:"
-                echo "$response" | jq '.projectStatus.conditions[] | select(.status == "ERROR")' 2>/dev/null || echo "No error conditions data available"
-                
-                echo "📋 All conditions:"
-                echo "$response" | jq '.projectStatus.conditions[]' 2>/dev/null || echo "No conditions data available"
-                
-                return 1
-                ;;
-              "WARN")
-                echo "⚠️  QUALITY GATE WARNING: $status"
-                echo "⚠️  Warning conditions:"
-                echo "$response" | jq '.projectStatus.conditions[] | select(.status == "WARN")' 2>/dev/null || echo "No warning conditions data available"
-                
-                # You can choose to fail or continue on warnings
-                echo "🔄 Continuing build despite warnings (modify as needed)"
-                return 0
-                ;;
-              "IN_PROGRESS")
-                echo "⏳ Analysis still in progress... (attempt $attempt/$max_attempts)"
-                if [ $attempt -eq $max_attempts ]; then
-                  echo "💥 ERROR: Analysis did not complete within expected time"
-                  return 1
-                fi
-                echo "⏳ Waiting $wait_time seconds..."
-                sleep $wait_time
-                wait_time=$((wait_time + 5))  # Increase wait time
-                attempt=$((attempt + 1))
-                continue
-                ;;
-              "null"|"")
-                echo "⚠️  Empty or null status received (attempt $attempt/$max_attempts)"
-                echo "Raw response:"
-                echo "$response" | head -200
-                
-                if [ $attempt -eq $max_attempts ]; then
-                  echo "💥 ERROR: Could not determine quality gate status"
-                  return 1
-                fi
-                
-                echo "⏳ Waiting $wait_time seconds before retry..."
-                sleep $wait_time
-                attempt=$((attempt + 1))
-                continue
-                ;;
-              *)
-                echo "🔍 UNKNOWN QUALITY GATE STATUS: $status"
-                echo "📄 Full response:"
-                echo "$response" | jq '.' 2>/dev/null || echo "$response"
-                
-                if [ $attempt -eq $max_attempts ]; then
-                  echo "💥 ERROR: Unknown status after $max_attempts attempts"
-                  return 1
-                fi
-                
-                echo "⏳ Waiting $wait_time seconds before retry..."
-                sleep $wait_time
-                attempt=$((attempt + 1))
-                continue
-                ;;
-            esac
-          done
-          
-          echo "💥 ERROR: Max attempts reached without success"
-          return 1
-        }
+        # Wait for analysis to complete
+        TASK_STATUS="IN_PROGRESS"
+        while [ "$TASK_STATUS" == "IN_PROGRESS" ]
+        do
+          TASK_STATUS=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/ce/task?id=$TASK_ID | jq -r '.task.status')
+          echo "Task status: $TASK_STATUS"
+          if [ "$TASK_STATUS" == "IN_PROGRESS" ]; then
+            echo "Analysis still in progress, waiting..."
+            sleep 50
+          fi
+        done
         
-        # Call the quality gate check function
-        if ! check_quality_gate; then
-          echo "💥 Quality gate check failed - stopping build"
-          
-          # Show available debug files
-          echo "📁 Debug files available:"
-          ls -la result_attempt_*.json 2>/dev/null || echo "No debug files found"
-          
+        # Get quality gate status
+        QUALITY_GATE_STATUS=$(curl -s -u $SONAR_TOKEN: $SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY | jq -r '.projectStatus.status')
+        echo "Quality Gate Status: $QUALITY_GATE_STATUS"
+        
+        # Fail build if quality gate fails
+        if [ "$QUALITY_GATE_STATUS" != "OK" ]; then
+          echo "Quality gate failed!"
           exit 1
-        fi
-        
-        echo "✅ Quality gate check completed successfully"
-      
-  post_build:
-    commands:
-      - echo "Post-build phase started on `date`"
-      - |
-        if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
-          echo "🎉 Build completed successfully with quality gate passed"
-          
-          # Create build summary
-          echo "📊 Build Summary:" > build_summary.txt
-          echo "Build Number: $CODEBUILD_BUILD_NUMBER" >> build_summary.txt
-          echo "Build Status: SUCCESS" >> build_summary.txt
-          echo "Quality Gate: PASSED" >> build_summary.txt
-          echo "Project: $Project" >> build_summary.txt
-          echo "Organization: $Organization" >> build_summary.txt
-          echo "SonarQube Host: $HOST" >> build_summary.txt
-          echo "Build Time: $(date)" >> build_summary.txt
-          
-          cat build_summary.txt
-          
-          # Archive test results
-          echo "📁 Archiving test results..."
-          find . -name "*.xml" -path "*/surefire-reports/*" -exec ls -la {} \; || echo "No test results found"
-          
         else
-          echo "💥 Build failed"
-          
-          # Show debug information
-          echo "🔍 Debug information:"
-          echo "Java version: $(java -version 2>&1 | head -1)"
-          echo "Maven version: $(mvn -version 2>&1 | head -1)"
-          echo "Current directory: $(pwd)"
-          echo "Directory contents:"
-          ls -la
-          
-          # Show any available debug files
-          echo "📁 Available debug files:"
-          ls -la result_attempt_*.json 2>/dev/null || echo "No debug files found"
-          
-          # Show last few lines of any log files
-          echo "📋 Recent log entries:"
-          find . -name "*.log" -type f -exec echo "=== {} ===" \; -exec tail -10 {} \; 2>/dev/null || echo "No log files found"
+          echo "Quality gate passed!"
         fi
-      
-      - echo "🏁 Build process completed at `date`"
 
 artifacts:
   files:
-    - target/*.jar
-    - target/*.war
-    - build_summary.txt
-    - result_attempt_*.json
-    - target/surefire-reports/**/*
-  exclude-paths:
-    - target/classes/**/*
-    - target/test-classes/**/*
-    - apache-maven-*/**/*
-    - sonar-scanner-*/**/*
-  name: sonarqube-build-$(date +%Y-%m-%d-%H-%M-%S)
-
-reports:
-  surefire-reports:
-    files:
-      - 'target/surefire-reports/*.xml'
-    file-format: 'JUNITXML'
-  jacoco-reports:
-    files:
-      - 'target/site/jacoco/jacoco.xml'
-    file-format: 'JACOCOXML'
-
-cache:
-  paths:
-    - '/root/.m2/**/*'
+    - '**/*'
