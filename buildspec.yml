@@ -2,7 +2,7 @@ version: 0.2
 env:
   secrets-manager:
     LOGIN: sonarcreds:sonartoken
-    HOST: sonarcreds:HOST
+    HOST: sonarcreds:Host
     Organization: sonarcreds:Organization
     Project: sonarcreds:Project
 
