@@ -25,6 +25,6 @@ phases:
       - mvn test -Dtest=\!*PostgresIntegrationTests
       - mvn sonar:sonar -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
       - sleep 5
-      - curl https://sonarcloud.io/api/qualitygates/project_status?projectKey=$Project > result.json
+      - curl https://sonarcloud.io/api/qualitygates/project_status?projectKey=javafromcodepipeline > result.json
       - cat result.json
       - if [ $(jq -r '.projectStatus.status' result.json) = ERROR ] ; then $CODEBUILD_BUILD_SUCCEEDING -eq 0 ;fi
