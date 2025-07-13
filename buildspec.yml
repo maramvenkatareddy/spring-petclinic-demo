@@ -7,13 +7,11 @@ env:
     Project: sonarcreds:Project
 
 phases:
-  install:
-    runtime-versions:
-      java: openjdk17
   pre_build:
     commands:
       - apt-get update
       - apt-get install -y jq unzip wget
+      - apt install openjdk-17-jdk -y
       - wget https://dlcdn.apache.org/maven/maven-3/3.9.10/binaries/apache-maven-3.9.10-bin.tar.gz
       - tar xzf apache-maven-3.9.10-bin.tar.gz
       - ln -s apache-maven-3.9.10 maven
