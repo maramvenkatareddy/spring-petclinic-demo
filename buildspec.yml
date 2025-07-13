@@ -29,10 +29,16 @@ phases:
       # Wait for SonarQube to process the results (adjust time as needed)
       - echo "Waiting for SonarQube to process results"
       - sleep 60  # Wait longer to ensure analysis is complete
-      # Simple quality gate check
-      - QUALITY_GATE_STATUS=$(curl -s -u 14b0c1d6ede21ab6cd33fb7da8d553e77e62dbc2: https://sonarcloud.io/api/qualitygates/project_status?projectKey=javafromcodepipeline | jq -r '.projectStatus.status')
-      - echo "Quality Gate Status: $QUALITY_GATE_STATUS"
-      - if [ "$QUALITY_GATE_STATUS" != "OK" ]; then echo "Quality gate failed!" && exit 1; else echo "Quality gate passed!"; fi
+      - |
+          echo "Checking Quality Gate status..."
+          QUALITY_GATE_STATUS=$(curl -s -u 14b0c1d6ede21ab6cd33fb7da8d553e77e62dbc2: https://sonarcloud.io/api/qualitygates/project_status?projectKey=javafromcodepipeline | jq -r '.projectStatus.status')
+          echo "Quality Gate Status: $QUALITY_GATE_STATUS"
+          if [ "$QUALITY_GATE_STATUS" != "OK" ]; then
+            echo "❌ Quality gate failed!"
+            exit 1
+          else
+            echo "✅ Quality gate passed!"
+          fi
 artifacts:
   files:
     - '**/*'
