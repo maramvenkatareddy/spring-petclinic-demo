@@ -25,6 +25,25 @@ phases:
       - mvn test -Dtest=\!*PostgresIntegrationTests
       - mvn sonar:sonar -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.projectKey=$Project -Dsonar.organization=$Organization
       - sleep 5
-      - curl https://sonarcloud.io/api/qualitygates/project_status?projectKey=javafromcodepipeline > result.json
+      - curl -s -u "$LOGIN:" "$HOST/api/qualitygates/project_status?projectKey=$Project" > result.json
       - cat result.json
-      - if [ $(jq -r '.projectStatus.status' result.json) = ERROR ] ; then $CODEBUILD_BUILD_SUCCEEDING -eq 0 ;fi
+      
+      # Validate quality gate status
+      - |
+        if jq -e '.errors' result.json > /dev/null; then
+          echo "ERROR: Failed to check quality gate"
+          jq '.errors' result.json
+          exit 1
+        fi
+        
+        status=$(jq -r '.projectStatus.status' result.json)
+        if [ "$status" = "ERROR" ]; then
+          echo "QUALITY GATE FAILED: $status"
+          jq '.projectStatus.conditions' result.json
+          exit 1
+        elif [ "$status" = "OK" ]; then
+          echo "QUALITY GATE PASSED: $status"
+        else
+          echo "UNKNOWN QUALITY GATE STATUS: $status"
+          exit 1
+        fi
